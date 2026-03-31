@@ -1,0 +1,21 @@
+# Training data (ไม่ต้อง push ขึ้น git - ใหญ่เกิน)
+sports/train/
+sports/test/
+sports/valid/
+ball/test/
+archive.zip
+
+# Pre-trained H5 (ไม่ compatible)
+sports/*.h5
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# VS Code
+.vscode/
+
+# Output
+output/

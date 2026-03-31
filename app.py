@@ -1,7 +1,7 @@
 """
 app.py - Intelligent System Classification App
-- ML Model: Pokemon Identification (HOG + RF/SVM/XGBoost Ensemble)
-- Neural Network: Sports Image Classification (EfficientNetB0)
+- ML Model  : Sports Ball Classification  (HOG + Random Forest)
+- Neural Net: Sports Image Classification (MobileNetV2, 100 categories)
 """
 
 import os, json
@@ -15,41 +15,31 @@ from PIL import Image
 
 # ── PATHS ────────────────────────────────────────────────────
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
-POKE_DIR   = os.path.join(BASE_DIR, "pokemon")
-SPORTS_DIR = os.path.join(BASE_DIR, "sports")
+BALL_DIR   = os.path.join(BASE_DIR, "ball",   "train")
+SPORTS_DIR = os.path.join(BASE_DIR, "sports", "train")
 MODEL_DIR  = os.path.join(BASE_DIR, "models")
 
-POKE_CSV    = os.path.join(POKE_DIR,   "pokemon.csv")
-POKE_IMGS   = os.path.join(POKE_DIR,   "images")
-SPORTS_CSV  = os.path.join(SPORTS_DIR, "sports.csv")
-SPORTS_TRAIN= os.path.join(SPORTS_DIR, "train")
+ML_IMG_SIZE = 64
+NN_IMG_SIZE = 128
 
-ML_IMG_SIZE = 96
-NN_IMG_SIZE = 224
+# Ball emoji map
+BALL_EMOJI = {
+    "american_football": "🏈", "baseball": "⚾", "basketball": "🏀",
+    "billiard_ball": "🎱",     "bowling_ball": "🎳", "cricket_ball": "🏏",
+    "football": "⚽",          "golf_ball": "⛳",    "hockey_ball": "🏑",
+    "hockey_puck": "🏒",       "rugby_ball": "🏉",   "shuttlecock": "🏸",
+}
 
-# Pokemon type colours
-TYPE_COLORS = {
-    "Fire":"#F08030","Water":"#6890F0","Grass":"#78C850","Electric":"#F8D030",
-    "Ice":"#98D8D8","Fighting":"#C03028","Poison":"#A040A0","Ground":"#E0C068",
-    "Flying":"#A890F0","Psychic":"#F85888","Bug":"#A8B820","Rock":"#B8A038",
-    "Ghost":"#705898","Dragon":"#7038F8","Dark":"#705848","Steel":"#B8B8D0",
-    "Fairy":"#EE99AC","Normal":"#A8A878",
+BALL_DISPLAY = {
+    "american_football": "American Football", "baseball": "Baseball",
+    "basketball": "Basketball",               "billiard_ball": "Billiard Ball",
+    "bowling_ball": "Bowling Ball",           "cricket_ball": "Cricket Ball",
+    "football": "Football (Soccer)",          "golf_ball": "Golf Ball",
+    "hockey_ball": "Hockey Ball",             "hockey_puck": "Hockey Puck",
+    "rugby_ball": "Rugby Ball",               "shuttlecock": "Shuttlecock",
 }
 
 # ── CACHED DATA ───────────────────────────────────────────────
-
-@st.cache_data
-def load_pokemon_df():
-    df = pd.read_csv(POKE_CSV)
-    df.columns = [c.strip() for c in df.columns]
-    df["Name"] = df["Name"].str.strip().str.lower()
-    return df
-
-@st.cache_data
-def load_sports_df():
-    df = pd.read_csv(SPORTS_CSV)
-    df.columns = [c.strip() for c in df.columns]
-    return df
 
 @st.cache_data
 def load_model_info():
@@ -83,22 +73,15 @@ def load_nn_model():
         p = os.path.join(MODEL_DIR, name)
         if os.path.exists(p):
             return tf.keras.models.load_model(p)
-    # ลอง load จาก .h5 โดยตรง
-    h5 = os.path.join(SPORTS_DIR, "EfficientNetB0-100-(224 X 224)- 98.40.h5")
-    if os.path.exists(h5):
-        return tf.keras.models.load_model(h5)
     return None
 
 # ── IMAGE UTILS ───────────────────────────────────────────────
 
-def preprocess_for_ml(uploaded, size=ML_IMG_SIZE):
-    img = Image.open(uploaded).convert("RGBA")
-    bg = Image.new("RGBA", img.size, (255,255,255,255))
-    bg.paste(img, mask=img.split()[3])
-    img = bg.convert("RGB").resize((size,size), Image.LANCZOS)
+def preprocess_ml(uploaded, size=ML_IMG_SIZE):
+    img = Image.open(uploaded).convert("RGB").resize((size,size), Image.LANCZOS)
     return np.array(img)
 
-def preprocess_for_nn(uploaded, size=NN_IMG_SIZE):
+def preprocess_nn(uploaded, size=NN_IMG_SIZE):
     img = Image.open(uploaded).convert("RGB").resize((size,size), Image.LANCZOS)
     arr = np.array(img, dtype=np.float32) / 255.0
     return np.expand_dims(arr, 0)
@@ -108,147 +91,148 @@ def extract_hog(img):
     return hog(img, orientations=9, pixels_per_cell=(8,8),
                cells_per_block=(2,2), channel_axis=-1)
 
-# ── LOOKUP ────────────────────────────────────────────────────
-
-def lookup_pokemon(name, df):
-    row = df[df["Name"] == name.lower()]
-    if row.empty:
-        return {"name":name.title(),"type1":"","type2":"","evolution":""}
-    r = row.iloc[0]
-    def safe(v): return str(v).strip() if pd.notna(v) and str(v).strip() not in ("nan","") else ""
-    return {"name":str(r["Name"]).title(), "type1":safe(r["Type1"]),
-            "type2":safe(r["Type2"]), "evolution":safe(r["Evolution"])}
-
-# ── UI HELPERS ────────────────────────────────────────────────
-
-def type_badge(t):
-    c = TYPE_COLORS.get(t,"#888")
-    st.markdown(f'<span style="background:{c};color:white;padding:4px 12px;'
-                f'border-radius:12px;font-weight:600;font-size:13px;margin:2px">'
-                f'{t}</span>', unsafe_allow_html=True)
+# ── CHART HELPERS ─────────────────────────────────────────────
 
 def bar_chart(probs, labels, top_k=5, color="#6C63FF"):
     idx  = np.argsort(probs)[::-1][:top_k]
     vals = [probs[i]*100 for i in idx]
-    labs = [str(labels[i]).title() for i in idx]
-    fig, ax = plt.subplots(figsize=(7,3))
-    colors = [color if i==0 else "#D8D4F5" for i in range(len(labs))]
-    ax.barh(labs[::-1], vals[::-1], color=colors[::-1], height=0.55)
-    for i,(v,l) in enumerate(zip(vals[::-1],labs[::-1])):
+    labs = [BALL_DISPLAY.get(str(labels[i]), str(labels[i]).replace("_"," ").title())
+            for i in idx]
+    fig, ax = plt.subplots(figsize=(7, 3))
+    cs      = [color if i==0 else "#DDD8F8" for i in range(len(labs))]
+    ax.barh(labs[::-1], vals[::-1], color=cs[::-1], height=0.55)
+    for i,(v,_) in enumerate(zip(vals[::-1], labs[::-1])):
         ax.text(v+0.5, i, f"{v:.1f}%", va="center", fontsize=9)
-    ax.set_xlim(0,100); ax.set_xlabel("ความน่าจะเป็น (%)")
+    ax.set_xlim(0,105); ax.set_xlabel("ความน่าจะเป็น (%)")
     ax.spines[["top","right"]].set_visible(False)
     plt.tight_layout(); st.pyplot(fig); plt.close(fig)
 
-def history_chart(hist):
+def training_history_chart(hist):
     if not hist:
         st.info("ไม่พบข้อมูล training history")
         return
     phases = []
     if "p1_acc" in hist:
         phases.append(("Phase 1 — Train Top Layers",
-                        hist["p1_acc"],hist["p1_val_acc"],
-                        hist["p1_loss"],hist["p1_val_loss"]))
+                        hist["p1_acc"], hist["p1_val_acc"],
+                        hist["p1_loss"], hist["p1_val_loss"]))
     if "p2_acc" in hist:
         phases.append(("Phase 2 — Fine-Tuning",
-                        hist["p2_acc"],hist["p2_val_acc"],
-                        hist["p2_loss"],hist["p2_val_loss"]))
-    for title, ta,va,tl,vl in phases:
+                        hist["p2_acc"], hist["p2_val_acc"],
+                        hist["p2_loss"], hist["p2_val_loss"]))
+    for title, ta, va, tl, vl in phases:
         st.markdown(f"**{title}**")
-        fig, axes = plt.subplots(1,2,figsize=(10,3))
+        fig, axes = plt.subplots(1, 2, figsize=(10, 3))
         ep = range(1, len(ta)+1)
-        axes[0].plot(ep,ta,label="Train",color="#6C63FF")
-        axes[0].plot(ep,va,label="Val",  color="#FF6584",ls="--")
+        axes[0].plot(ep, ta, label="Train", color="#6C63FF")
+        axes[0].plot(ep, va, label="Val",   color="#FF6584", ls="--")
         axes[0].set_title("Accuracy"); axes[0].legend()
         axes[0].spines[["top","right"]].set_visible(False)
-        axes[1].plot(ep,tl,label="Train",color="#6C63FF")
-        axes[1].plot(ep,vl,label="Val",  color="#FF6584",ls="--")
+        axes[1].plot(ep, tl, label="Train", color="#6C63FF")
+        axes[1].plot(ep, vl, label="Val",   color="#FF6584", ls="--")
         axes[1].set_title("Loss"); axes[1].legend()
         axes[1].spines[["top","right"]].set_visible(False)
         plt.tight_layout(); st.pyplot(fig); plt.close(fig)
 
+def sample_image(folder, label):
+    """แสดงรูปตัวอย่างจาก dataset"""
+    path = os.path.join(folder, label)
+    if not os.path.isdir(path):
+        return None
+    files = [f for f in os.listdir(path)
+             if f.lower().endswith((".jpg",".jpeg",".png"))]
+    if files:
+        return os.path.join(path, files[0])
+    return None
+
+def confidence_badge(conf):
+    if conf >= 70:
+        st.success(f"ความมั่นใจ: **{conf:.1f}%** ✅")
+    elif conf >= 40:
+        st.warning(f"ความมั่นใจ: **{conf:.1f}%** ⚠️")
+    else:
+        st.error(f"ความมั่นใจ: **{conf:.1f}%** ❌ (ต่ำ)")
+
 # ════════════════════════════════════════════════════════════
-# PAGE 1: อธิบาย ML Model (Pokemon)
+# PAGE 1: อธิบาย ML Model (Ball)
 # ════════════════════════════════════════════════════════════
 
 def page_explain_ml(info):
-    st.title("🤖 อธิบาย ML Model")
-    st.caption("Dataset: Pokemon Images | Task: ระบุชื่อ Pokemon จากรูปภาพ")
+    st.title("🎱 อธิบาย ML Model")
+    st.caption("Dataset: Sports Ball Images | Task: จำแนกประเภทบอลกีฬา")
     st.markdown("---")
 
-    # Dataset overview
+    # Dataset
     st.header("1. ข้อมูล Dataset")
-    c1,c2,c3 = st.columns(3)
-    c1.metric("จำนวน Pokemon", f"{info.get('ml_num_classes',809)} ตัว")
-    c2.metric("ขนาดรูปภาพ", f"{info.get('ml_img_size',96)}×{info.get('ml_img_size',96)} px")
-    c3.metric("ข้อมูลเพิ่มเติม", "Type1, Type2, Evolution")
-    st.markdown("""
-**Source:** Pokemon Images & Stats dataset — รูป PNG ของ Pokemon 809 ตัว (1 รูปต่อตัว)
+    n_cls = info.get("ml_num_classes", 12)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("ประเภทบอล", f"{n_cls} ประเภท")
+    c2.metric("ขนาดรูปภาพ", f"{info.get('ml_img_size',64)}×{info.get('ml_img_size',64)} px")
+    c3.metric("ML Accuracy", f"{info.get('ml_accuracy','?')}%")
 
-| คอลัมน์ | คำอธิบาย |
-|---------|---------|
-| Name | ชื่อ Pokemon |
-| Type1 | ประเภทหลัก (เช่น Fire, Water) |
-| Type2 | ประเภทรอง (ถ้ามี) |
-| Evolution | Pokemon ที่ evolve ต่อ (ถ้ามี) |
-    """)
+    classes = info.get("ml_classes", list(BALL_DISPLAY.keys()))
+    st.markdown("**ประเภทบอลทั้งหมด:**")
+    cols = st.columns(4)
+    for i, cls in enumerate(classes):
+        emoji = BALL_EMOJI.get(cls, "🎯")
+        name  = BALL_DISPLAY.get(cls, cls.replace("_"," ").title())
+        cols[i%4].markdown(f"{emoji} {name}")
 
     # Data Prep
     st.header("2. การเตรียมข้อมูล & Data Augmentation")
     st.markdown("""
-เนื่องจากมีรูปแค่ **1 รูปต่อ Pokemon** จึงใช้ Data Augmentation เพิ่มข้อมูล:
-
 | Augmentation | รายละเอียด |
 |---|---|
 | Flip Horizontal | กลับภาพซ้าย-ขวา |
-| Rotation | หมุน ±15° |
-| Brightness | ปรับความสว่าง (γ=0.75, 1.25) |
-| **รวม** | **6 รูปต่อ Pokemon (~4,800+ samples)** |
+| Rotation +15° | หมุนตามเข็มนาฬิกา 15° |
+| Rotation -15° | หมุนทวนเข็มนาฬิกา 15° |
+| **รวม** | **4 รูปต่อภาพต้นฉบับ** |
     """)
 
     # HOG
     st.header("3. Feature Extraction — HOG")
     st.markdown("""
-ใช้ **Histogram of Oriented Gradients (HOG)** จับรูปร่างและขอบ Pokemon:
-- `orientations = 9`
-- `pixels_per_cell = (8, 8)`
-- `cells_per_block = (2, 2)`
-- Feature vector: **~8,100 ค่าต่อรูป**
+ใช้ **Histogram of Oriented Gradients (HOG)** จับรูปร่าง ขอบ และพื้นผิวของบอล:
+
+| Parameter | ค่า |
+|---|---|
+| `orientations` | 9 |
+| `pixels_per_cell` | (8, 8) |
+| `cells_per_block` | (2, 2) |
+| Feature vector | ~2,916 ค่าต่อรูป |
+
+HOG ดีสำหรับบอลเพราะ:
+- บอลแต่ละชนิดมี **รูปร่างและ texture เฉพาะตัว**
+- ทนต่อการเปลี่ยนแสงและสี
     """)
 
-    # Models
-    st.header("4. ทฤษฎีของแต่ละโมเดล")
-    c1,c2,c3 = st.columns(3)
-    with c1:
-        st.markdown("#### 🌲 Random Forest")
-        st.markdown("- สร้าง Decision Tree 200 ต้น\n- ลด overfitting ด้วย random sampling\n- robust ต่อ noise")
-    with c2:
-        st.markdown("#### 📐 SVM")
-        st.markdown("- หา hyperplane แบ่ง class\n- RBF kernel (จัดการ non-linear)\n- C=10, probability=True")
-    with c3:
-        st.markdown("#### ⚡ XGBoost")
-        st.markdown("- Gradient Boosting Tree\n- 200 estimators, depth=6\n- learning_rate=0.1")
-
+    # Model
+    st.header("4. Random Forest Classifier")
     st.markdown("""
-รวม 3 โมเดลด้วย **Soft Voting** — เฉลี่ย probability แล้วเลือก class ที่มีค่าสูงสุด
+```
+HOG Features (2,916 ค่า)
+        ↓
+Random Forest
+  ├── Tree 1  →  prediction
+  ├── Tree 2  →  prediction
+  ├── Tree 3  →  prediction
+  └── Tree N  →  prediction
+        ↓
+  Majority Vote
+        ↓
+   Ball Class
+```
+- **150 Decision Trees** รวม votes กัน
+- แต่ละ tree ใช้ random subset ของ features
+- ป้องกัน overfitting ด้วย bagging
     """)
 
-    # Accuracy Table
-    st.header("5. ผลลัพธ์ (Accuracy)")
-    acc_df = pd.DataFrame({
-        "โมเดล": ["Random Forest","SVM","XGBoost","**Ensemble (Soft Voting)**"],
-        "Accuracy": [
-            f"~{info.get('ml_rf_acc','?')}%",
-            f"~{info.get('ml_svm_acc','?')}%",
-            f"~{info.get('ml_xgb_acc','?')}%",
-            f"**{info.get('ml_accuracy','?')}%**",
-        ]
-    })
-    st.table(acc_df)
+    # Accuracy
+    st.header("5. ผลลัพธ์")
+    st.metric("Accuracy (Test Set)", f"{info.get('ml_accuracy','?')}%")
 
-    # Ref
     st.header("6. อ้างอิง")
-    st.markdown("- [Pokemon Images & Types — Kaggle](https://www.kaggle.com/datasets/vishalsubbiah/pokemon-images-and-types)")
+    st.markdown("- [Sports Balls Dataset — Kaggle](https://www.kaggle.com/)")
 
 # ════════════════════════════════════════════════════════════
 # PAGE 2: อธิบาย Neural Network (Sports)
@@ -256,97 +240,75 @@ def page_explain_ml(info):
 
 def page_explain_nn(info, hist):
     st.title("🧠 อธิบาย Neural Network")
-    st.caption("Dataset: Sports Image Classification (100 ประเภทกีฬา) | Model: EfficientNetB0")
+    st.caption("Dataset: Sports Image Classification (100 ประเภทกีฬา) | Model: MobileNetV2")
     st.markdown("---")
 
-    # Dataset
     st.header("1. ข้อมูล Dataset")
     n_cls = info.get("nn_num_classes", 100)
-    c1,c2,c3 = st.columns(3)
+    c1, c2, c3 = st.columns(3)
     c1.metric("ประเภทกีฬา", f"{n_cls} ประเภท")
-    c2.metric("ขนาดรูปภาพ", f"{info.get('nn_img_size',224)}×{info.get('nn_img_size',224)} px")
+    c2.metric("ขนาดรูปภาพ", f"{info.get('nn_img_size',128)}×{info.get('nn_img_size',128)} px")
     c3.metric("NN Accuracy", f"{info.get('nn_accuracy','?')}%")
-    st.markdown("""
-**Source:** Sports Image Classification dataset — รูปภาพกีฬากว่า 100 ประเภท
-พร้อม label ชื่อกีฬา ใช้สำหรับ classification
-    """)
 
-    # Classes grid
     classes = info.get("nn_classes", [])
     if classes:
-        st.markdown("**ตัวอย่างประเภทกีฬาบางส่วน:**")
+        st.markdown("**ตัวอย่างประเภทกีฬา (20 แรก):**")
         cols = st.columns(5)
         for i, cls in enumerate(classes[:20]):
             cols[i%5].markdown(f"- {cls.title()}")
 
-    # Architecture
-    st.header("2. สถาปัตยกรรมโมเดล (EfficientNetB0)")
+    st.header("2. สถาปัตยกรรมโมเดล (MobileNetV2)")
     st.markdown("""
-ใช้ **Transfer Learning** จาก EfficientNetB0 (pre-trained ImageNet):
+ใช้ **Transfer Learning** จาก MobileNetV2 (pre-trained ImageNet):
 
 ```
-Input (224×224×3)
-    ↓
-EfficientNetB0 Base  ← Pre-trained weights (ImageNet)
-    ↓
+Input (128×128×3)
+      ↓
+MobileNetV2 Base   ← Pre-trained (ImageNet)
+      ↓
 GlobalAveragePooling2D
-    ↓
+      ↓
 BatchNormalization
-    ↓
+      ↓
 Dense(256, ReLU)
-    ↓
-Dropout(0.5)
-    ↓
+      ↓
+Dropout(0.4)
+      ↓
 Dense(N_classes, Softmax)
 ```
+MobileNetV2 ใช้ **Depthwise Separable Convolution** ทำให้เร็วและเบากว่า VGG/ResNet
     """)
 
-    # Training Strategy
     st.header("3. กลยุทธ์การ Train (2 Phase)")
-    c1,c2 = st.columns(2)
+    c1, c2 = st.columns(2)
     with c1:
         st.markdown("""
-#### Phase 1 — Train Top Layers
-- **Freeze** EfficientNetB0 ทั้งหมด
-- Train เฉพาะ layers ที่เพิ่มใหม่
-- LR = 1e-3, max 10 epochs
-- EarlyStopping (patience=5)
+#### Phase 1 — Top Layers
+- **Freeze** MobileNetV2 ทั้งหมด
+- Train เฉพาะ layers ใหม่
+- LR = 1e-3, 5 epochs
         """)
     with c2:
         st.markdown("""
 #### Phase 2 — Fine-Tuning
-- **Unfreeze** ทุก layer
-- Train ด้วย LR ต่ำมาก (1e-5)
-- max 20 epochs
-- EarlyStopping + ModelCheckpoint
+- **Unfreeze** 30 layers สุดท้าย
+- Train ด้วย LR ต่ำ (1e-5)
+- 10 epochs + EarlyStopping
         """)
 
-    # Data Aug
-    st.header("4. Data Augmentation")
-    st.markdown("""
-| Augmentation | ค่าที่ใช้ |
-|---|---|
-| Rotation | ±20° |
-| Width/Height Shift | 15% |
-| Horizontal Flip | ✓ |
-| Zoom | 15% |
-| Brightness | 70%–130% |
-    """)
+    st.header("4. Training History")
+    training_history_chart(hist)
 
-    # History
-    st.header("5. Training History")
-    history_chart(hist)
-
-    st.header("6. อ้างอิง")
+    st.header("5. อ้างอิง")
     st.markdown("- [Sports Classification Dataset — Kaggle](https://www.kaggle.com/datasets/gpiosenka/sports-classification)")
 
 # ════════════════════════════════════════════════════════════
-# PAGE 3: ทดสอบ ML Model (Pokemon)
+# PAGE 3: ทดสอบ ML (Ball)
 # ════════════════════════════════════════════════════════════
 
-def page_test_ml(pokemon_df):
-    st.title("🤖 ทดสอบ ML Ensemble Model")
-    st.caption("🎮 อัปโหลดรูป Pokemon → โมเดลจะระบุชื่อ + Type + Evolution")
+def page_test_ml():
+    st.title("🎱 ทดสอบ ML Model — Sports Ball")
+    st.caption("อัปโหลดรูปบอลกีฬา → โมเดลจะจำแนกประเภทบอล")
     st.markdown("---")
 
     model, le = load_ml_model()
@@ -355,79 +317,59 @@ def page_test_ml(pokemon_df):
         return
     st.success("✅ โหลดโมเดล ML สำเร็จ")
 
-    st.markdown("### อัปโหลดรูปภาพ Pokemon")
-    st.caption("รองรับ: JPG, JPEG, PNG")
-    uploaded = st.file_uploader("เลือกรูป", type=["jpg","jpeg","png"], key="ml_up")
+    # Sample images grid
+    with st.expander("🖼️ ดูตัวอย่างรูปบอลแต่ละประเภท"):
+        gcols = st.columns(6)
+        for i, cls in enumerate(BALL_DISPLAY.keys()):
+            sp = sample_image(BALL_DIR, cls)
+            if sp:
+                gcols[i%6].image(sp,
+                    caption=f"{BALL_EMOJI.get(cls,'')} {BALL_DISPLAY.get(cls,cls)}",
+                    width=90)
+
+    st.markdown("### อัปโหลดรูปบอล")
+    uploaded = st.file_uploader("เลือกรูปภาพ (JPG/PNG)",
+                                type=["jpg","jpeg","png"], key="ml_up")
 
     if uploaded:
-        col1, col2 = st.columns([1,3])
+        col1, col2 = st.columns([1, 3])
         with col1:
-            st.image(uploaded, caption="รูปที่อัปโหลด", width=180)
+            st.image(uploaded, caption="รูปที่อัปโหลด", width=200)
 
         with st.spinner("🔍 กำลังวิเคราะห์..."):
-            img  = preprocess_for_ml(uploaded)
-            feat = extract_hog(img).reshape(1,-1)
+            img  = preprocess_ml(uploaded)
+            feat = extract_hog(img).reshape(1, -1)
             prob = model.predict_proba(feat)[0]
             idx  = int(np.argmax(prob))
-            name = le.classes_[idx]
+            label = le.classes_[idx]
 
-        info = lookup_pokemon(name, pokemon_df)
+        emoji   = BALL_EMOJI.get(label, "🎯")
+        display = BALL_DISPLAY.get(label, label.replace("_"," ").title())
+        conf    = float(prob[idx]) * 100
 
         st.markdown("---")
         st.subheader("🎯 ผลการวิเคราะห์")
 
-        r1c1, r1c2 = st.columns([1,2])
+        with col2:
+            st.markdown(f"# {emoji} {display}")
+            confidence_badge(conf)
 
-        # Pokemon image from dataset
-        with r1c1:
-            pimg_path = os.path.join(POKE_IMGS, f"{name}.png")
-            if os.path.exists(pimg_path):
-                pimg = Image.open(pimg_path).convert("RGBA")
-                bg = Image.new("RGBA", pimg.size, (255,255,255,255))
-                bg.paste(pimg, mask=pimg.split()[3])
-                st.image(bg.convert("RGB"), caption=f"Pokemon: {info['name']}",
-                         width=150)
-
-        with r1c2:
-            st.markdown(f"## {info['name']}")
-            st.markdown("**ประเภท (Type):**")
-            tc = st.columns(4)
-            with tc[0]:
-                if info["type1"]: type_badge(info["type1"])
-            with tc[1]:
-                if info["type2"]: type_badge(info["type2"])
-            st.markdown("")
-            if info["evolution"]:
-                evo = lookup_pokemon(info["evolution"], pokemon_df)
-                st.markdown(f"**Evolution ถัดไป →** 🔆 **{evo['name']}**")
-                ec = st.columns(4)
-                with ec[0]:
-                    if evo["type1"]: type_badge(evo["type1"])
-                with ec[1]:
-                    if evo["type2"]: type_badge(evo["type2"])
-            else:
-                st.markdown("**Evolution:** ไม่มี Evolution ต่อ 🏁")
+            # Sample from dataset
+            sp = sample_image(BALL_DIR, label)
+            if sp:
+                st.image(sp, caption=f"ตัวอย่างจาก dataset: {display}", width=150)
 
         st.markdown("---")
         st.markdown("#### 📊 Top 5 ความน่าจะเป็น")
-        bar_chart(prob, le.classes_, top_k=5, color="#8B63FF")
-
-        # Confidence info
-        conf = float(prob[idx])*100
-        if conf >= 60:
-            st.success(f"ระดับความมั่นใจ: **{conf:.1f}%** ✅")
-        elif conf >= 30:
-            st.warning(f"ระดับความมั่นใจ: **{conf:.1f}%** ⚠️ (ปานกลาง)")
-        else:
-            st.error(f"ระดับความมั่นใจ: **{conf:.1f}%** ❌ (ต่ำ)")
+        bar_chart(prob, le.classes_, top_k=5, color="#6C63FF")
 
 # ════════════════════════════════════════════════════════════
 # PAGE 4: ทดสอบ Neural Network (Sports)
 # ════════════════════════════════════════════════════════════
 
 def page_test_nn(info):
-    st.title("🧠 ทดสอบ Neural Network (EfficientNetB0)")
-    st.caption("⚽ อัปโหลดรูปกีฬา → โมเดลจะจำแนกประเภทกีฬา")
+    st.title("🧠 ทดสอบ Neural Network — Sports")
+    st.caption("อัปโหลดรูปกีฬา → โมเดลจะจำแนกประเภทกีฬา")
     st.markdown("---")
 
     model = load_nn_model()
@@ -437,57 +379,38 @@ def page_test_nn(info):
     st.success("✅ โหลดโมเดล Neural Network สำเร็จ")
 
     classes = info.get("nn_classes", [])
-    if not classes:
-        # fallback: ดึงจาก folder structure
-        if os.path.isdir(SPORTS_TRAIN):
-            classes = sorted([d for d in os.listdir(SPORTS_TRAIN)
-                              if os.path.isdir(os.path.join(SPORTS_TRAIN,d))])
-    if not classes:
-        st.error("❌ ไม่พบ class names")
-        return
+    if not classes and os.path.isdir(SPORTS_DIR):
+        classes = sorted([d for d in os.listdir(SPORTS_DIR)
+                          if os.path.isdir(os.path.join(SPORTS_DIR, d))])
 
-    st.markdown("### อัปโหลดรูปภาพกีฬา")
-    st.caption("รองรับ: JPG, JPEG, PNG")
-    uploaded = st.file_uploader("เลือกรูป", type=["jpg","jpeg","png"], key="nn_up")
+    st.markdown("### อัปโหลดรูปกีฬา")
+    uploaded = st.file_uploader("เลือกรูปภาพ (JPG/PNG)",
+                                type=["jpg","jpeg","png"], key="nn_up")
 
     if uploaded:
-        col1, col2 = st.columns([1,3])
+        col1, col2 = st.columns([1, 3])
         with col1:
-            st.image(uploaded, caption="รูปที่อัปโหลด", width=180)
+            st.image(uploaded, caption="รูปที่อัปโหลด", width=200)
 
         with st.spinner("🔍 กำลังวิเคราะห์..."):
-            img_in = preprocess_for_nn(uploaded)
+            img_in = preprocess_nn(uploaded)
             prob   = model.predict(img_in, verbose=0)[0]
             idx    = int(np.argmax(prob))
             label  = classes[idx] if idx < len(classes) else f"class_{idx}"
 
+        display = label.replace("_"," ").title()
+        conf    = float(prob[idx]) * 100
+
         st.markdown("---")
         st.subheader("🎯 ผลการวิเคราะห์")
 
-        col_a, col_b = st.columns([1,2])
-        with col_a:
-            # แสดงรูปตัวอย่างจาก training set (ถ้ามี)
-            sample_dir = os.path.join(SPORTS_TRAIN, label)
-            sample_shown = False
-            if os.path.isdir(sample_dir):
-                samples = [f for f in os.listdir(sample_dir)
-                           if f.lower().endswith((".jpg",".jpeg",".png"))]
-                if samples:
-                    sp = os.path.join(sample_dir, samples[0])
-                    st.image(sp, caption=f"ตัวอย่าง: {label.title()}", width=150)
-                    sample_shown = True
-            if not sample_shown:
-                st.markdown(f"### 🏅 {label.title()}")
+        with col2:
+            st.markdown(f"# 🏅 {display}")
+            confidence_badge(conf)
 
-        with col_b:
-            st.markdown(f"## 🏅 {label.title()}")
-            conf = float(prob[idx])*100
-            if conf >= 70:
-                st.success(f"ประเภทกีฬา: **{label.title()}**  \nความมั่นใจ: **{conf:.1f}%** ✅")
-            elif conf >= 40:
-                st.warning(f"ประเภทกีฬา: **{label.title()}**  \nความมั่นใจ: **{conf:.1f}%** ⚠️")
-            else:
-                st.error(f"ประเภทกีฬา: **{label.title()}**  \nความมั่นใจ: **{conf:.1f}%** ❌ (ต่ำ)")
+            sp = sample_image(SPORTS_DIR, label)
+            if sp:
+                st.image(sp, caption=f"ตัวอย่าง: {display}", width=150)
 
         st.markdown("---")
         st.markdown("#### 📊 Top 5 ความน่าจะเป็น")
@@ -499,51 +422,49 @@ def page_test_nn(info):
 
 def main():
     st.set_page_config(
-        page_title="Intelligent System Classification",
-        page_icon="🤖",
+        page_title="Intelligent System — Sports Classification",
+        page_icon="🎱",
         layout="wide",
     )
 
-    pokemon_df = load_pokemon_df()
-    info       = load_model_info()
-    hist       = load_history()
-
-    ml_acc = info.get("ml_accuracy","N/A")
-    nn_acc = info.get("nn_accuracy","N/A")
+    info = load_model_info()
+    hist = load_history()
 
     with st.sidebar:
         st.markdown("# 🤖 Intelligent System")
+        st.markdown("##### Sports Classification")
         st.markdown("---")
 
-        st.markdown("**เลือกหน้า**")
-        page = st.radio("", [
-            "อธิบาย ML Model",
-            "อธิบาย Neural Network",
-            "ทดสอบ ML Model",
-            "ทดสอบ Neural Network",
+        page = st.radio("เลือกหน้า", [
+            "🎱 อธิบาย ML Model",
+            "🧠 อธิบาย Neural Network",
+            "🎯 ทดสอบ ML (บอล)",
+            "🏅 ทดสอบ NN (กีฬา)",
         ], label_visibility="collapsed")
 
         st.markdown("---")
         st.markdown(
             f"""
-<div style="background:linear-gradient(135deg,#f0f4ff,#fdf0ff);
-padding:16px;border-radius:12px;font-size:13px;line-height:1.8">
-<b>📂 ML Dataset:</b><br>
-&ensp;Pokemon ({info.get('ml_num_classes',809)} ตัว)<br>
+<div style="background:linear-gradient(135deg,#f0f4ff,#fff0f5);
+padding:16px;border-radius:12px;font-size:13px;line-height:2">
+<b>🎱 ML Dataset:</b><br>
+&ensp;Sports Balls ({info.get('ml_num_classes',12)} ประเภท)<br>
 <b>🎯 ML Accuracy:</b>
-<span style="color:#6C63FF;font-weight:700">&ensp;{ml_acc}%</span><br><br>
-<b>📂 NN Dataset:</b><br>
+<span style="color:#6C63FF;font-weight:700">
+&ensp;{info.get('ml_accuracy','?')}%</span><br><br>
+<b>🏅 NN Dataset:</b><br>
 &ensp;Sports ({info.get('nn_num_classes',100)} ประเภท)<br>
 <b>🎯 NN Accuracy:</b>
-<span style="color:#FF6584;font-weight:700">&ensp;{nn_acc}%</span>
+<span style="color:#FF6584;font-weight:700">
+&ensp;{info.get('nn_accuracy','?')}%</span>
 </div>""",
             unsafe_allow_html=True,
         )
 
-    if   page == "อธิบาย ML Model":        page_explain_ml(info)
-    elif page == "อธิบาย Neural Network":  page_explain_nn(info, hist)
-    elif page == "ทดสอบ ML Model":         page_test_ml(pokemon_df)
-    elif page == "ทดสอบ Neural Network":   page_test_nn(info)
+    if   "ML Model"         in page: page_explain_ml(info)
+    elif "Neural Network"   in page: page_explain_nn(info, hist)
+    elif "ML (บอล)"       in page:  page_test_ml()
+    elif "NN (กีฬา)"      in page:  page_test_nn(info)
 
 if __name__ == "__main__":
     main()
