@@ -102,14 +102,19 @@ def load_ml_model():
         return joblib.load(mp), joblib.load(lp)
     return None, None
 
+
 @st.cache_resource
 def load_nn_model():
-    import tensorflow as tf
-    for name in ["model_nn.keras", "model_nn_best.keras"]:
-        p = os.path.join(MODEL_DIR, name)
-        if os.path.exists(p):
-            return tf.keras.models.load_model(p)
+    try:
+        import tensorflow as tf
+        for name in ["model_nn.keras", "model_nn_best.keras"]:
+            p = os.path.join(MODEL_DIR, name)
+            if os.path.exists(p):
+                return tf.keras.models.load_model(p)
+    except ImportError:
+        return None
     return None
+
 
 def preprocess_ml(uploaded, size=ML_IMG_SIZE):
     img = Image.open(uploaded).convert("RGB").resize((size, size), Image.LANCZOS)
